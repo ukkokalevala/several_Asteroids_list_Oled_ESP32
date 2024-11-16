@@ -1,0 +1,183 @@
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+// WiFi credentials
+const char* ssid = "yourSSID";
+const char* password = "yourPASSWORD";
+
+// OLED display settings
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+
+// Button pins
+#define BUTTON_RIGHT 19  // Flip Right
+#define BUTTON_LEFT 18   // Flip Left
+#define BUTTON_SCREEN 9 // Screen On/Off
+
+// Debouncing variables
+unsigned long lastDebounceTime = 0;
+const unsigned long debounceDelay = 200; // Debounce delay in milliseconds
+
+// Asteroid data storage
+#define MAX_ASTEROIDS 10
+const char* asteroidNames[MAX_ASTEROIDS];
+const char* asteroidDates[MAX_ASTEROIDS];
+float asteroidMissDistances[MAX_ASTEROIDS];
+float asteroidVelocities[MAX_ASTEROIDS];
+
+int currentAsteroidIndex = 0;  // Current asteroid index
+int totalAsteroids = 0;        // Total number of asteroids
+bool isDisplayOn = true;       // Display on/off state
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin(7, 6);
+
+  // Initialize OLED display
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println("SSD1306 allocation failed");
+    while (true);
+  }
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  display.println("Connecting to WiFi...");
+  display.display();
+
+  // Initialize buttons
+  pinMode(BUTTON_RIGHT, INPUT_PULLUP);
+  pinMode(BUTTON_LEFT, INPUT_PULLUP);
+  pinMode(BUTTON_SCREEN, INPUT_PULLUP);
+
+  // Connect to WiFi
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    display.print(".");
+    display.display();
+  }
+  display.clearDisplay();
+  display.println("Connected to WiFi");
+  display.display();
+
+  // Fetch asteroid data
+  fetchAsteroidData();
+  displayAsteroid(currentAsteroidIndex);
+}
+
+void loop() {
+  int buttonRightState = digitalRead(BUTTON_RIGHT);
+  int buttonLeftState = digitalRead(BUTTON_LEFT);
+  int buttonScreenState = digitalRead(BUTTON_SCREEN);
+
+  // Debounce button presses
+  if (millis() - lastDebounceTime > debounceDelay) {
+    if (buttonRightState == LOW) { // Flip Right
+      if (isDisplayOn) {
+        currentAsteroidIndex++;
+        if (currentAsteroidIndex >= totalAsteroids) {
+          currentAsteroidIndex = 0; // Wrap to first asteroid
+        }
+        displayAsteroid(currentAsteroidIndex);
+      }
+      lastDebounceTime = millis();
+    }
+
+    if (buttonLeftState == LOW) { // Flip Left
+      if (isDisplayOn) {
+        if (currentAsteroidIndex == 0) {
+          currentAsteroidIndex = totalAsteroids - 1; // Wrap to last asteroid
+        } else {
+          currentAsteroidIndex--;
+        }
+        displayAsteroid(currentAsteroidIndex);
+      }
+      lastDebounceTime = millis();
+    }
+
+    if (buttonScreenState == LOW) { // Toggle Screen On/Off
+      isDisplayOn = !isDisplayOn;
+      if (!isDisplayOn) {
+        display.clearDisplay();
+        display.display();
+      } else {
+        displayAsteroid(currentAsteroidIndex);
+      }
+      lastDebounceTime = millis();
+    }
+  }
+}
+
+// Fetch asteroid data from NASA API
+void fetchAsteroidData() {
+  HTTPClient http;
+  String url = "https://api.nasa.gov/neo/rest/v1/feed?start_date=2024-11-17&end_date=2024-11-19&api_key=BAADLaA4VfkYHdAExyCAg3OBfrXivTf6krvbhz0G";
+  http.begin(url);
+  int httpCode = http.GET();
+
+  if (httpCode == 200) {
+    Serial.println("HTTP request successful!");
+    String payload = http.getString();
+
+    DynamicJsonDocument doc(8192);
+    DeserializationError error = deserializeJson(doc, payload);
+
+    if (!error) {
+      JsonArray neos = doc["near_earth_objects"]["2024-11-17"];
+      int asteroidCount = 0;
+
+      for (JsonObject neo : neos) {
+        if (asteroidCount < MAX_ASTEROIDS) {
+          asteroidNames[asteroidCount] = neo["name"];
+          asteroidDates[asteroidCount] = neo["close_approach_data"][0]["close_approach_date"];
+          asteroidMissDistances[asteroidCount] = neo["close_approach_data"][0]["miss_distance"]["kilometers"].as<float>();
+          asteroidVelocities[asteroidCount] = neo["close_approach_data"][0]["relative_velocity"]["kilometers_per_hour"].as<float>();
+          asteroidCount++;
+        }
+      }
+      totalAsteroids = asteroidCount;
+    } else {
+      Serial.print("JSON parsing failed: ");
+      Serial.println(error.c_str());
+    }
+  } else {
+    Serial.printf("HTTP Response code: %d\n", httpCode);
+  }
+
+  http.end();
+}
+
+// Display asteroid data on OLED
+void displayAsteroid(int asteroidIndex) {
+  if (!isDisplayOn) return; // Skip if display is off
+
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  display.println("Asteroid Tracker");
+  display.println("----------------");
+
+  if (asteroidIndex < totalAsteroids) {
+    const char* name = asteroidNames[asteroidIndex];
+    const char* date = asteroidDates[asteroidIndex];
+    float miss_distance = asteroidMissDistances[asteroidIndex];
+    float velocity = asteroidVelocities[asteroidIndex];
+
+    display.print("Name: ");
+    display.println(name);
+    display.print("Date: ");
+    display.println(date);
+    display.print("Dist (km): ");
+    display.println(miss_distance);
+    display.print("Vel (km/h): ");
+    display.println(velocity);
+  } else {
+    display.println("No asteroid data");
+  }
+
+  display.display();
+}
